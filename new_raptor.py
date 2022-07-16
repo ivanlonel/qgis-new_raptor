@@ -26,9 +26,10 @@ import os.path
 import qgis.core
 from qgis.PyQt.QtCore import QCoreApplication, QDateTime, QSettings, QTranslator
 from qgis.PyQt.QtGui import QIcon
-from qgis.PyQt.QtWidgets import QAction, QMessageBox
+from qgis.PyQt.QtWidgets import QAction, QMessageBox, QTableWidgetItem
 
-# Import the code for the dialog
+# Import the code for the dialogs
+from .impact_table import ImpactTable
 from .new_raptor_dialog import NewRaptorDialog
 
 # Initialize Qt resources from file resources.py
@@ -187,8 +188,10 @@ class NewRaptor:
         self.dlg.spb_lon.setValue(mc.center().x())
         self.dlg.dte_last.setDateTime(QDateTime.currentDateTime())
 
-        map_layers = [lyr.name() for lyr in mc.layers()]
-        missing_layers = [lyr for lyr in ("Raptor Nests", "Raptor Buffer") if lyr not in map_layers]
+        required_layer_names = ("Raptor Nests", "Raptor Buffer", "Linear Buffer")
+
+        map_layer_names = [lyr.name() for lyr in mc.layers()]
+        missing_layers = [lyr for lyr in required_layer_names if lyr not in map_layer_names]
         if missing_layers:
             QMessageBox.critical(
                 self.dlg,
@@ -203,28 +206,23 @@ class NewRaptor:
         result = self.dlg.exec_()
         # See if OK was pressed
         if result:
-            try:
-                (lyr_nests,) = qgis.core.QgsProject.instance().mapLayersByName("Raptor Nests")
-            except ValueError:
-                QMessageBox.critical(
-                    self.dlg,
-                    "Problem with layer",
-                    "There must be one and only one layer called Raptor Nests",
-                )
-                return
-
-            try:
-                (lyr_buffer,) = qgis.core.QgsProject.instance().mapLayersByName("Raptor Buffer")
-            except ValueError:
-                QMessageBox.critical(
-                    self.dlg,
-                    "Problem with layer",
-                    "There must be one and only one layer called Raptor Buffer",
-                )
-                return
+            layers = {}
+            project_instance = qgis.core.QgsProject.instance()
+            for layer_name in required_layer_names:
+                try:
+                    (layer,) = project_instance.mapLayersByName(layer_name)
+                except ValueError:
+                    QMessageBox.critical(
+                        self.dlg,
+                        "Problem with layer",
+                        f"There must be one and only one layer called {layer_name}",
+                    )
+                    return
+                else:
+                    layers[layer_name] = layer
 
             values = {
-                "Nest_ID": lyr_nests.maximumValue(lyr_nests.fields().indexOf("Nest_ID")) + 1,
+                "Nest_ID": layers["Raptor Nests"].maximumValue(layers["Raptor Nests"].fields().indexOf("Nest_ID")) + 1,
                 "lat_y_dd": self.dlg.spb_lat.value(),
                 "long_x_dd": self.dlg.spb_lon.value(),
                 "recentspec": self.dlg.cmb_species.currentText(),
@@ -235,7 +233,7 @@ class NewRaptor:
 
             # QMessageBox.information(self.dlg, "New Values", "\n".join(f"{k} = {v}" for k, v in values.items()))
 
-            ftr_nest = qgis.core.QgsFeature(lyr_nests.fields())
+            ftr_nest = qgis.core.QgsFeature(layers["Raptor Nests"].fields())
 
             for k, v in values.items():
                 ftr_nest.setAttribute(k, v)
@@ -243,12 +241,33 @@ class NewRaptor:
             geom = qgis.core.QgsGeometry(qgis.core.QgsPoint(values["long_x_dd"], values["lat_y_dd"]))
             ftr_nest.setGeometry(geom)
 
-            lyr_nests.dataProvider().addFeature(ftr_nest)
-            lyr_nests.reload()
+            layers["Raptor Nests"].dataProvider().addFeature(ftr_nest)
+            layers["Raptor Nests"].reload()
 
-            ftr_nest.setGeometry(geom.buffer(values["buf_dist"], 10))
-            lyr_buffer.dataProvider().addFeature(ftr_nest)
-            lyr_buffer.reload()
+            buffer = geom.buffer(values["buf_dist"], 10)
+            ftr_nest.setGeometry(buffer)
+            layers["Raptor Buffer"].dataProvider().addFeature(ftr_nest)
+            layers["Raptor Buffer"].reload()
+
+            dlg_impact_table = ImpactTable()
+            dlg_impact_table.setWindowTitle(f"Impacts Table for nest {values['Nest_ID']}")
+
+            # Find linear projects that will be impacted and report them in the table
+            for linear in layers["Linear Buffer"].getFeatures(buffer.boundingBox()):
+                val_distance = linear.geometry().distance(geom)
+                if val_distance < values["buf_dist"]:
+                    row = dlg_impact_table.tbl_impacts.rowCount()
+                    dlg_impact_table.tbl_impacts.insertRow(row)
+                    dlg_impact_table.tbl_impacts.setItem(row, 0, QTableWidgetItem(str(linear.attribute("Project"))))
+                    dlg_impact_table.tbl_impacts.setItem(row, 1, QTableWidgetItem(linear.attribute("type")))
+                    twi = QTableWidgetItem(f"{val_distance:3.6f}")
+                    twi.setTextAlignment(QtCore.Qt.AlignRight)
+                    dlg_impact_table.tbl_impacts.setItem(row, 2, twi)
+
+            dlg_impact_table.tbl_impacts.sortItems(2)
+
+            dlg_impact_table.show()
+            dlg_impact_table.exec_()
 
     def evt_cmb_species_changed(self, species):
         if species == "Swainsons Hawk":
