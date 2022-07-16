@@ -21,15 +21,18 @@
  *                                                                         *
  ***************************************************************************/
 """
-from qgis.PyQt.QtCore import QSettings, QTranslator, QCoreApplication
+import os.path
+
+import qgis.core
+from qgis.PyQt.QtCore import QCoreApplication, QDateTime, QSettings, QTranslator
 from qgis.PyQt.QtGui import QIcon
-from qgis.PyQt.QtWidgets import QAction
+from qgis.PyQt.QtWidgets import QAction, QMessageBox
+
+# Import the code for the dialog
+from .new_raptor_dialog import NewRaptorDialog
 
 # Initialize Qt resources from file resources.py
 from .resources import *
-# Import the code for the dialog
-from .new_raptor_dialog import NewRaptorDialog
-import os.path
 
 
 class NewRaptor:
@@ -48,11 +51,8 @@ class NewRaptor:
         # initialize plugin directory
         self.plugin_dir = os.path.dirname(__file__)
         # initialize locale
-        locale = QSettings().value('locale/userLocale')[0:2]
-        locale_path = os.path.join(
-            self.plugin_dir,
-            'i18n',
-            'NewRaptor_{}.qm'.format(locale))
+        locale = QSettings().value("locale/userLocale")[:2]
+        locale_path = os.path.join(self.plugin_dir, "i18n", f"NewRaptor_{locale}.qm")
 
         if os.path.exists(locale_path):
             self.translator = QTranslator()
@@ -61,7 +61,7 @@ class NewRaptor:
 
         # Declare instance attributes
         self.actions = []
-        self.menu = self.tr(u'&Add New Raptor')
+        self.menu = self.tr("&Add New Raptor")
 
         # Check if plugin was started the first time in current QGIS session
         # Must be set in initGui() to survive plugin reloads
@@ -80,8 +80,7 @@ class NewRaptor:
         :rtype: QString
         """
         # noinspection PyTypeChecker,PyArgumentList,PyCallByClass
-        return QCoreApplication.translate('NewRaptor', message)
-
+        return QCoreApplication.translate("NewRaptor", message)
 
     def add_action(
         self,
@@ -93,7 +92,8 @@ class NewRaptor:
         add_to_toolbar=True,
         status_tip=None,
         whats_this=None,
-        parent=None):
+        parent=None,
+    ):
         """Add a toolbar icon to the toolbar.
 
         :param icon_path: Path to the icon for this action. Can be a resource
@@ -149,9 +149,7 @@ class NewRaptor:
             self.iface.addToolBarIcon(action)
 
         if add_to_menu:
-            self.iface.addPluginToVectorMenu(
-                self.menu,
-                action)
+            self.iface.addPluginToVectorMenu(self.menu, action)
 
         self.actions.append(action)
 
@@ -160,34 +158,44 @@ class NewRaptor:
     def initGui(self):
         """Create the menu entries and toolbar icons inside the QGIS GUI."""
 
-        icon_path = ':/plugins/new_raptor/icon.png'
+        icon_path = ":/plugins/new_raptor/icon.png"
         self.add_action(
-            icon_path,
-            text=self.tr(u'Add New Raptor Nest'),
-            callback=self.run,
-            parent=self.iface.mainWindow())
+            icon_path, text=self.tr("Add New Raptor Nest"), callback=self.run, parent=self.iface.mainWindow()
+        )
 
         # will be set False in run()
         self.first_start = True
 
-
     def unload(self):
         """Removes the plugin menu item and icon from QGIS GUI."""
         for action in self.actions:
-            self.iface.removePluginVectorMenu(
-                self.tr(u'&Add New Raptor'),
-                action)
+            self.iface.removePluginVectorMenu(self.tr("&Add New Raptor"), action)
             self.iface.removeToolBarIcon(action)
-
 
     def run(self):
         """Run method that performs all the real work"""
 
         # Create the dialog with elements (after translation) and keep reference
         # Only create GUI ONCE in callback, so that it will only load when the plugin is started
-        if self.first_start == True:
+        if self.first_start:
             self.first_start = False
             self.dlg = NewRaptorDialog()
+            self.dlg.cmb_species.currentTextChanged.connect(self.evt_cmb_species_changed)
+
+        mc = self.iface.mapCanvas()
+        self.dlg.spb_lat.setValue(mc.center().y())
+        self.dlg.spb_lon.setValue(mc.center().x())
+        self.dlg.dte_last.setDateTime(QDateTime.currentDateTime())
+
+        map_layers = [lyr.name() for lyr in mc.layers()]
+        missing_layers = [lyr for lyr in ("Raptor Nests", "Raptor Buffer") if lyr not in map_layers]
+        if missing_layers:
+            QMessageBox.critical(
+                self.dlg,
+                "Missing layers",
+                "The following layers are missing from this project:\n\n" + "\n".join(missing_layers),
+            )
+            return
 
         # show the dialog
         self.dlg.show()
@@ -195,6 +203,55 @@ class NewRaptor:
         result = self.dlg.exec_()
         # See if OK was pressed
         if result:
-            # Do something useful here - delete the line containing pass and
-            # substitute with your code.
-            pass
+            try:
+                (lyr_nests,) = qgis.core.QgsProject.instance().mapLayersByName("Raptor Nests")
+            except ValueError:
+                QMessageBox.critical(
+                    self.dlg,
+                    "Problem with layer",
+                    "There must be one and only one layer called Raptor Nests",
+                )
+                return
+
+            try:
+                (lyr_buffer,) = qgis.core.QgsProject.instance().mapLayersByName("Raptor Buffer")
+            except ValueError:
+                QMessageBox.critical(
+                    self.dlg,
+                    "Problem with layer",
+                    "There must be one and only one layer called Raptor Buffer",
+                )
+                return
+
+            values = {
+                "Nest_ID": lyr_nests.maximumValue(lyr_nests.fields().indexOf("Nest_ID")) + 1,
+                "lat_y_dd": self.dlg.spb_lat.value(),
+                "long_x_dd": self.dlg.spb_lon.value(),
+                "recentspec": self.dlg.cmb_species.currentText(),
+                "buf_dist": self.dlg.spb_buffer.value(),
+                "recentstat": self.dlg.cmb_status.currentText(),
+                "lastsurvey": self.dlg.dte_last.dateTime(),
+            }
+
+            # QMessageBox.information(self.dlg, "New Values", "\n".join(f"{k} = {v}" for k, v in values.items()))
+
+            ftr_nest = qgis.core.QgsFeature(lyr_nests.fields())
+
+            for k, v in values.items():
+                ftr_nest.setAttribute(k, v)
+
+            geom = qgis.core.QgsGeometry(qgis.core.QgsPoint(values["long_x_dd"], values["lat_y_dd"]))
+            ftr_nest.setGeometry(geom)
+
+            lyr_nests.dataProvider().addFeature(ftr_nest)
+            lyr_nests.reload()
+
+            ftr_nest.setGeometry(geom.buffer(values["buf_dist"], 10))
+            lyr_buffer.dataProvider().addFeature(ftr_nest)
+            lyr_buffer.reload()
+
+    def evt_cmb_species_changed(self, species):
+        if species == "Swainsons Hawk":
+            self.dlg.spb_buffer.setValue(0.004)
+        else:
+            self.dlg.spb_buffer.setValue(0.008)
