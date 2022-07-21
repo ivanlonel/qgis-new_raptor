@@ -24,16 +24,16 @@
 import os.path
 
 import qgis.core
-from qgis.PyQt.QtCore import QCoreApplication, QDateTime, QSettings, QTranslator
+from qgis.PyQt.QtCore import QCoreApplication, QDateTime, QSettings, Qt, QTranslator
 from qgis.PyQt.QtGui import QIcon
 from qgis.PyQt.QtWidgets import QAction, QMessageBox, QTableWidgetItem
+
+# Initialize Qt resources from file resources.py
+from . import resources  # noqa: F401
 
 # Import the code for the dialogs
 from .impact_table import ImpactTable
 from .new_raptor_dialog import NewRaptorDialog
-
-# Initialize Qt resources from file resources.py
-from .resources import *
 
 
 class NewRaptor:
@@ -261,7 +261,7 @@ class NewRaptor:
                     dlg_impact_table.tbl_impacts.setItem(row, 0, QTableWidgetItem(str(linear.attribute("Project"))))
                     dlg_impact_table.tbl_impacts.setItem(row, 1, QTableWidgetItem(linear.attribute("type")))
                     twi = QTableWidgetItem(f"{val_distance:3.6f}")
-                    twi.setTextAlignment(QtCore.Qt.AlignRight)
+                    twi.setTextAlignment(Qt.AlignRight)
                     dlg_impact_table.tbl_impacts.setItem(row, 2, twi)
 
             dlg_impact_table.tbl_impacts.sortItems(2)
